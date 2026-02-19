@@ -19,7 +19,7 @@ from ui.main_window import MainWindow
 def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("QKD BB84 Simulator")
-    app.setOrganizationName("CryptoLab")
+    app.setOrganizationName("Aakansh Gupta")
 
     window = MainWindow()
     window.show()

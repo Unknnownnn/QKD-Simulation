@@ -13,12 +13,16 @@ from PyQt6.QtGui import QFont, QColor, QPainter, QPainterPath, QBrush
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QSplitter, QLabel, QSizePolicy, QFrame, QPushButton,
+    QTabWidget, QCheckBox,
 )
 
 from controller.simulation_controller import SimulationController, PhotonEvent, SessionSummary
+from controller.sdn_controller import SDNController
 from .control_panel import ControlPanel
 from .animation_canvas import AnimationCanvas
 from .analytics_panel import AnalyticsPanel
+from .basis_matching_panel import BasisMatchingPanel
+from .network_dashboard import NetworkDashboard
 from .styles import DARK_STYLESHEET
 
 # Base ms used by _SpeedRow in control_panel — keep in sync
@@ -187,14 +191,21 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("QKD Simulation")
-        self.resize(1280, 760)
-        self.setMinimumSize(900, 600)
+        self.resize(1380, 800)
+        self.setMinimumSize(1000, 640)
         self.setStyleSheet(DARK_STYLESHEET)
 
         self._controller = SimulationController(self)
+        self._sdn = SDNController(self)
         self._photon_queue: list[PhotonEvent] = []
         self._canvas_busy: bool = False
         self._last_summary: SessionSummary | None = None
+        # Guard flag: True while NetworkDashboard is syncing Eve state to control panel.
+        # Prevents _on_eve_toggled from re-calling SDN methods that are already updated.
+        self._eve_from_network: bool = False
+        # When True: safe rerouting suppresses Eve; only all-paths-blocked triggers Eve.
+        # When False (default): any poisoned link immediately enables Eve.
+        self._sdn_routing_enabled: bool = False
 
         self._build_ui()
         self._connect_signals()
@@ -208,13 +219,75 @@ class MainWindow(QMainWindow):
 
         root = QVBoxLayout(central)
         root.setContentsMargins(8, 6, 8, 6)
-        root.setSpacing(6)
+        root.setSpacing(4)
 
         # Title bar
-        title = QLabel("Quantum Key Distribution")
+        title_row = QHBoxLayout()
+        title = QLabel("Quantum Key Distribution — BB84 Simulator")
         title.setObjectName("labelTitle")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        root.addWidget(title)
+        title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        title.setStyleSheet("font-size: 15px; font-weight: bold; color: #e8eaf6; background: transparent;")
+        title_row.addWidget(title)
+        title_row.addStretch()
+
+        # ── Network-Aware Routing toggle ────────────────────────────────
+        self._chk_sdn_routing = QCheckBox("🔀 Network-Aware Routing")
+        self._chk_sdn_routing.setToolTip(
+            "When ON: if the Network Dashboard poisons a route but a safe\n"
+            "alternate path exists, the BB84 simulation runs without Eve\n"
+            "(traffic is rerouted away from the attacker).\n"
+            "Eve is only enabled when ALL paths are compromised.\n\n"
+            "When OFF: any poisoned link immediately enables Eve."
+        )
+        self._chk_sdn_routing.setStyleSheet(
+            "QCheckBox { color: #90caf9; font-size: 11px; background: transparent; spacing: 6px; }"
+            "QCheckBox::indicator { width: 14px; height: 14px; border-radius: 3px;"
+            "  border: 1px solid rgba(100,140,255,160); background: rgba(14,14,40,200); }"
+            "QCheckBox::indicator:checked { background: #3d5afe;"
+            "  border: 1px solid #82b1ff; }"
+            "QCheckBox:hover { color: #e8eaf6; }"
+        )
+        self._chk_sdn_routing.stateChanged.connect(self._on_sdn_routing_toggled)
+        title_row.addWidget(self._chk_sdn_routing)
+
+        root.addLayout(title_row)
+
+        # ── Tab widget to host multiple panels ─────────────────────────
+        self._tabs = QTabWidget()
+        self._tabs.setStyleSheet(
+            "QTabWidget::pane { border: 1px solid rgba(80,100,220,60); border-radius: 6px; }"
+            "QTabBar::tab { background: rgba(14,14,26,180); color: #90caf9;"
+            " padding: 6px 14px; border-radius: 4px; margin-right: 2px; }"
+            "QTabBar::tab:selected { background: rgba(40,50,140,200); color: #e8eaf6; }"
+            "QTabBar::tab:hover { background: rgba(30,30,80,220); }"
+        )
+
+        # Tab 0: Classic simulation (original layout)
+        self._tabs.addTab(self._build_simulation_tab(central), "BB84 Simulation")
+
+        # Tab 1: Basis Matching & Sifting panel
+        self._basis_panel = BasisMatchingPanel()
+        self._tabs.addTab(self._basis_panel, "Basis Matching")
+
+        # Tab 2: SDN Network Dashboard
+        self._net_dashboard = NetworkDashboard(self._sdn)
+        self._tabs.addTab(self._net_dashboard, "Network Dashboard")
+
+        root.addWidget(self._tabs, stretch=1)
+
+        # Status bar
+        self.statusBar().setStyleSheet(
+            "background-color: rgba(10,10,25,230); color: #7986cb;"
+            " border-top: 1px solid rgba(80,100,220,60); font-size: 11px;"
+        )
+        self.statusBar().showMessage("Ready  —  configure settings and click Run")
+
+    def _build_simulation_tab(self, central_parent: QWidget) -> QWidget:
+        """Builds the original simulation layout as a tab widget child."""
+        tab_w = QWidget()
+        tab_layout = QVBoxLayout(tab_w)
+        tab_layout.setContentsMargins(0, 4, 0, 0)
+        tab_layout.setSpacing(4)
 
         # Main splitter
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -253,17 +326,12 @@ class MainWindow(QMainWindow):
         splitter.setSizes([280, 640, 360])
         self._splitter = splitter
 
-        root.addWidget(splitter, stretch=1)
+        tab_layout.addWidget(splitter, stretch=1)
 
-        # Snackbar — parented to central widget so it floats over everything
-        self._snackbar = _Snackbar(central, self._show_analytics_for_snackbar)
+        # Snackbar — parented to central_parent so it floats over tabs too
+        self._snackbar = _Snackbar(central_parent, self._show_analytics_for_snackbar)
 
-        # Status bar
-        self.statusBar().setStyleSheet(
-            "background-color: rgba(10,10,25,230); color: #7986cb;"
-            " border-top: 1px solid rgba(80,100,220,60); font-size: 11px;"
-        )
-        self.statusBar().showMessage("Ready  —  configure settings and click Run")
+        return tab_w
 
     # ------------------------------------------------------------------ #
     #  Signal connections                                                  #
@@ -297,6 +365,9 @@ class MainWindow(QMainWindow):
 
         # Canvas signals back when it finishes one photon
         self._canvas.photon_done.connect(self._dispatch_next_photon)
+
+        # Cross-layer: Network Dashboard poisoning → auto-toggle Eve in BB84 tab
+        self._net_dashboard.poisoning_changed.connect(self._on_network_poisoning_changed)
 
         # Initialise controller with current panel values
         ctrl.key_length        = cp.key_length
@@ -354,10 +425,87 @@ class MainWindow(QMainWindow):
     def _on_eve_toggled(self, active: bool) -> None:
         self._controller.eve_active = active
         self._canvas.set_eve_active(active)
+        # If this call originated from the NetworkDashboard (which already updated
+        # the SDN), skip the SDN mirror call to avoid redundant/conflicting changes.
+        if self._eve_from_network:
+            return
+        # Cross-layer: mirror Eve state in the SDN network
+        sdn = self._net_dashboard.get_sdn()
+        if active:
+            sdn.simulate_attack_on_link("A\u2192R1", "intercept_resend")
+        else:
+            sdn.clear_link_attack("A\u2192R1")
+
+    def _on_sdn_routing_toggled(self, state: int) -> None:
+        """Checkbox toggled — update flag and re-evaluate current network state."""
+        self._sdn_routing_enabled = bool(state)
+        # Re-run the poisoning logic immediately so the simulation reflects the
+        # current network state without needing to re-poison anything.
+        health = self._net_dashboard.get_sdn().network_health()
+        any_poisoned = health["compromised_links"] > 0
+        self._on_network_poisoning_changed(any_poisoned)
+
+    def _on_network_poisoning_changed(self, any_poisoned: bool) -> None:
+        """Called when NetworkDashboard poisons or clears routes.
+
+        Routing OFF (default):
+            Any poisoned link → Eve ON. Clears → Eve OFF.
+
+        Routing ON:
+            Safe alternate path exists → Eve OFF   (traffic rerouted around the attacker)
+            ALL paths compromised      → Eve ON    (no escape, Eve intercepts)
+            No poison                  → Eve OFF
+        """
+        sdn = self._net_dashboard.get_sdn()
+
+        if not self._sdn_routing_enabled:
+            # ── Default (routing-unaware) mode ──────────────────────────
+            eve_should_be_active = any_poisoned
+            routing_note = ""
+        elif not any_poisoned:
+            # ── Routing ON, network clean ────────────────────────────────
+            eve_should_be_active = False
+            routing_note = "No attacks — direct path secure."
+        elif sdn.can_route_safely():
+            # ── Routing ON, safe detour available ────────────────────────
+            eve_should_be_active = False
+            safe_path = sdn.get_active_route("A", "B")
+            path_str  = " → ".join(safe_path) if safe_path else "?"
+            routing_note = f"Safe re-route: {path_str}  |  Eve bypassed  "
+        else:
+            # ── Routing ON, all paths blocked ────────────────────────────
+            eve_should_be_active = True
+            routing_note = "ALL PATHS COMPROMISED  |  Eve ACTIVE  "
+
+        self._eve_from_network = True
+        try:
+            self._control_panel.set_eve_active(eve_should_be_active)
+        finally:
+            self._eve_from_network = False
+
+        # ── Tab title badges ─────────────────────────────────────────────
+        if any_poisoned and eve_should_be_active:
+            self._tabs.setTabText(2, "Network Dashboard")
+            self._tabs.setTabText(0, "BB84 Simulation (Eve Active)")
+        elif any_poisoned:
+            # Poisoned but rerouted safely
+            self._tabs.setTabText(2, "Network Dashboard")
+            self._tabs.setTabText(0, "BB84 Simulation (Rerouted)")
+        else:
+            self._tabs.setTabText(2, "Network Dashboard")
+            self._tabs.setTabText(0, "BB84 Simulation")
+
+        # ── Status bar update ────────────────────────────────────────────
+        if routing_note:
+            self.statusBar().showMessage(f"Network Routing  |  {routing_note}")
+
+
 
     def _on_photon_processed(self, event: PhotonEvent) -> None:
         """Buffer incoming photon events from the simulation controller."""
         self._photon_queue.append(event)
+        # Also feed into basis matching panel (live update)
+        self._basis_panel.update_photon(event)
         # If canvas is idle, kick off the first photon immediately
         if not self._canvas_busy:
             self._dispatch_next_photon()
@@ -418,6 +566,24 @@ class MainWindow(QMainWindow):
             sifted=summary.sifted_length,
             final=summary.final_key_length,
         )
+        # Cross-layer: push session QBER into network SDN controller.
+        # If Eve was detected we push the measured QBER onto A→R1 so the
+        # SDN raises an alert and reroutes; otherwise we clear any attack
+        # to restore the link to a healthy state.
+        sdn = self._net_dashboard.get_sdn()
+        if summary.eve_detected:
+            # Confirm the attack with the real measured QBER value.
+            # This ensures the SDN alert reflects the actual session result
+            # even if Eve rate was partial.
+            sdn.update_link_qber("A→R1", summary.qber,
+                                  attack_type="intercept_resend")
+            # Switch the network tab title to show alert
+            self._tabs.setTabText(2, "Network Dashboard (Alert)")
+        else:
+            # Clean session — ensure the primary link is healthy
+            sdn.clear_link_attack("A→R1")
+            self._tabs.setTabText(2, "Network Dashboard")
+        self._net_dashboard.push_session_qber(summary.qber)
         eve_status = "Eve detected" if summary.eve_detected else "Secure"
         self.statusBar().showMessage(
             f"Session complete  |  QBER: {summary.qber*100:.1f}%  |  "
@@ -433,6 +599,13 @@ class MainWindow(QMainWindow):
         self._snackbar.hide_animated()
         self._canvas.reset()
         self._analytics.reset()
+        self._basis_panel.reset()
+        # Cross-layer: reset SDN to clean default topology
+        # (_reset_network emits poisoning_changed(False) which will update tab titles)
+        self._net_dashboard._reset_network()
+        # Ensure both tab titles are back to their defaults regardless
+        self._tabs.setTabText(0, "BB84 Simulation")
+        self._tabs.setTabText(2, "Network Dashboard")
         self._stage_label.setText("Stage: Idle")
         self._stage_label.setStyleSheet(
             "color: #90caf9; font-size: 12px; font-weight: bold;"

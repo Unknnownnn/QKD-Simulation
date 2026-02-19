@@ -567,6 +567,15 @@ class ControlPanel(QFrame):
         self._btn_step.setEnabled(not running)
         self._spin_key.setEnabled(not running)
 
+    def set_eve_active(self, active: bool) -> None:
+        """Programmatically enable/disable Eve (called by MainWindow for cross-layer sync).
+        Animates the toggle and emits eve_toggled so the controller/canvas also update.
+        """
+        if self._eve_toggle.isChecked() == active:
+            return  # already in the right state — nothing to do
+        self._eve_toggle.setChecked(active)   # slides the toggle thumb (no signal emitted)
+        self._on_eve_toggled(active)           # update label, emit eve_toggled
+
     def set_stage(self, stage: int) -> None:
         for i, dot in enumerate(self._stage_dots):
             if i < stage:
