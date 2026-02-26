@@ -1,0 +1,251 @@
+/* ─── QKD Secure Communication Platform ── Global Styles ─── */
+
+:root {
+  --bg-primary: #0a0a1a;
+  --bg-secondary: #0e0e2a;
+  --bg-card: #111130;
+  --bg-card-hover: #16163a;
+  --bg-input: #0c0c24;
+  --border: rgba(80, 100, 220, 0.2);
+  --border-focus: rgba(80, 100, 220, 0.5);
+  --text-primary: #e8eaf6;
+  --text-secondary: #7986cb;
+  --text-muted: #5c6bc0;
+  --accent-blue: #74b9ff;
+  --accent-green: #00b894;
+  --accent-red: #d63031;
+  --accent-yellow: #fdcb6e;
+  --accent-purple: #a29bfe;
+  --accent-cyan: #00cec9;
+  --shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+  --radius: 8px;
+  --radius-lg: 12px;
+  --font-sans: 'Inter', -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Consolas', monospace;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  overflow: hidden;
+  height: 100vh;
+}
+
+#root {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--bg-secondary); }
+::-webkit-scrollbar-thumb { background: var(--text-muted); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-secondary); }
+
+/* ─── Utility ─── */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+}
+
+.card:hover { border-color: var(--border-focus); }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.badge-safe { background: rgba(0, 184, 148, 0.15); color: var(--accent-green); }
+.badge-warning { background: rgba(253, 203, 110, 0.15); color: var(--accent-yellow); }
+.badge-critical { background: rgba(214, 48, 49, 0.15); color: var(--accent-red); }
+.badge-info { background: rgba(116, 185, 255, 0.15); color: var(--accent-blue); }
+.badge-purple { background: rgba(162, 155, 254, 0.15); color: var(--accent-purple); }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn:hover { background: var(--bg-card-hover); border-color: var(--border-focus); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.btn-primary {
+  background: rgba(74, 114, 196, 0.3);
+  border-color: rgba(74, 114, 196, 0.5);
+  color: var(--accent-blue);
+}
+.btn-primary:hover { background: rgba(74, 114, 196, 0.5); }
+
+.btn-green {
+  background: rgba(0, 184, 148, 0.2);
+  border-color: rgba(0, 184, 148, 0.4);
+  color: var(--accent-green);
+}
+.btn-green:hover { background: rgba(0, 184, 148, 0.4); }
+
+.btn-red {
+  background: rgba(214, 48, 49, 0.2);
+  border-color: rgba(214, 48, 49, 0.4);
+  color: var(--accent-red);
+}
+.btn-red:hover { background: rgba(214, 48, 49, 0.4); }
+
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+
+input, select, textarea {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  padding: 8px 12px;
+  font-size: 13px;
+  font-family: var(--font-sans);
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+input:focus, select:focus, textarea:focus { border-color: var(--accent-blue); }
+
+/* ─── Layout ─── */
+.app-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  min-height: 48px;
+  z-index: 100;
+}
+
+.app-header h1 {
+  font-size: 16px;
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.app-header .subtitle {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: 12px;
+}
+
+.app-content {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+/* ─── Tab Navigation ─── */
+.tab-nav {
+  display: flex;
+  gap: 2px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  padding: 0 12px;
+}
+
+.tab-btn {
+  padding: 10px 18px;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tab-btn:hover { color: var(--text-primary); background: rgba(255,255,255,0.03); }
+.tab-btn.active {
+  color: var(--accent-blue);
+  border-bottom-color: var(--accent-blue);
+  background: rgba(74, 114, 196, 0.08);
+}
+
+/* ─── Panels ─── */
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.panel-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.panel-subtitle {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* ─── Animations ─── */
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+@keyframes slideUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes glow { 0%,100% { box-shadow: 0 0 5px rgba(0,184,148,0.3); } 50% { box-shadow: 0 0 15px rgba(0,184,148,0.6); } }
+
+.animate-in { animation: slideUp 0.3s ease-out; }
+.pulse { animation: pulse 2s infinite; }
+
+/* ─── Status Bar ─── */
+.status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 16px;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-muted);
+  min-height: 28px;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 6px;
+}
+
+.status-dot.online { background: var(--accent-green); animation: glow 2s infinite; }
+.status-dot.offline { background: var(--accent-red); }
