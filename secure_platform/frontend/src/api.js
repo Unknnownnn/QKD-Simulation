@@ -86,6 +86,21 @@ export const deactivateEve = (link_id = null) =>
 export const getEveIntercepts = (qubitLimit = 128, msgLimit = 50) =>
   request(`/api/eve/intercepts?qubit_limit=${qubitLimit}&msg_limit=${msgLimit}`);
 
+// Steal the current active key silently (side-channel attack)
+export const eveStealKey = () =>
+  request('/api/eve/steal-key', { method: 'POST' });
+
+// Generate a fresh key for Alice+Bob AND give Eve a copy (undetected compromise)
+export const generateCompromisedKey = (config = {}) =>
+  request('/api/keys/generate-compromised', {
+    method: 'POST',
+    body: JSON.stringify({ key_length: 512, noise_depol: 0.01, noise_loss: 0.02, ...config }),
+  });
+
+// Clear all of Eve's stolen keys
+export const clearStolenKeys = () =>
+  request('/api/eve/stolen-keys', { method: 'DELETE' });
+
 // ── Alerts ──
 export const getAlerts = () => request('/api/alerts');
 export const clearAlerts = () => request('/api/alerts', { method: 'DELETE' });

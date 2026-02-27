@@ -330,7 +330,8 @@ class NetworkManager:
         if len(self._intercept_messages) > 200:
             self._intercept_messages = self._intercept_messages[-200:]
 
-    def get_intercepts(self, qubit_limit: int = 128, msg_limit: int = 50) -> EveIntercepts:
+    def get_intercepts(self, qubit_limit: int = 128, msg_limit: int = 50,
+                        stolen_key_ids: Optional[List[str]] = None) -> EveIntercepts:
         """Return current intercept state for Eve's console."""
         qubits = self._intercept_qubits[-qubit_limit:]
         msgs = self._intercept_messages[-msg_limit:]
@@ -346,6 +347,7 @@ class NetworkManager:
             messages_captured=len(self._intercept_messages),
             qubits=qubits,
             messages=msgs,
+            stolen_key_ids=stolen_key_ids or [],
         )
 
     # ── Smart Routing ────────────────────────────────────────────────── #
@@ -403,6 +405,24 @@ class NetworkManager:
 
     def get_eve_status(self) -> EveStatus:
         return self._eve
+
+    def is_route_compromised(self, src: str = "A", dst: str = "B") -> bool:
+        """
+        Return True if the active route from src→dst passes through any
+        compromised link (i.e. Eve is watching that segment).
+
+        When smart routing is on, Dijkstra avoids compromised links entirely,
+        so this returns False — meaning messages travel on a safe path and
+        Eve cannot intercept them.  When smart routing is off (or all paths
+        are compromised), this returns True.
+        """
+        route = self._active_routes.get((src, dst), [])
+        for i in range(len(route) - 1):
+            link_id = f"{route[i]}→{route[i + 1]}"
+            lk = self._links.get(link_id)
+            if lk and lk.compromised:
+                return True
+        return False
 
     def get_alerts(self, limit: int = 50) -> List[RouteAlertResponse]:
         return list(reversed(self._alerts[-limit:]))

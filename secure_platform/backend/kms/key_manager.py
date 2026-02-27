@@ -84,6 +84,10 @@ class KeyManager:
         self._alerts: List[SecurityAlert] = []
         self._alert_id = 0
         self._qber_threshold = 0.11
+        # Eve's covertly-stolen key material: key_id → key_hex
+        # Populated when a compromised key-generation is performed or Eve
+        # explicitly steals the current key.  Alice & Bob remain unaware.
+        self._eve_stolen_keys: Dict[str, str] = {}
 
     # ── QKD Key Generation ───────────────────────────────────────────── #
 
@@ -278,6 +282,51 @@ class KeyManager:
 
     def clear_pool(self, user_pair: Optional[str] = None):
         self._pool.clear_pool(user_pair)
+
+    # ── Eve Key Theft ─────────────────────────────────────────────────── #
+
+    def register_stolen_key(self, key_id: str, key_hex: str) -> None:
+        """Record that Eve has a covert copy of key_id."""
+        self._eve_stolen_keys[key_id] = key_hex
+
+    def steal_active_key(self, user_pair: str = "alice:bob") -> Optional[str]:
+        """
+        Eve grabs what Alice & Bob currently consider their active key.
+        Returns the key_id that was stolen, or None if no key is available.
+        """
+        entry = self._pool.get_active_key(user_pair)
+        if entry:
+            self._eve_stolen_keys[entry.key_id] = entry.key_hex
+            return entry.key_id
+        return None
+
+    def eve_can_decrypt(self, key_id: Optional[str]) -> bool:
+        """True when Eve holds a stolen copy of the given key."""
+        return bool(key_id and key_id in self._eve_stolen_keys)
+
+    def decrypt_with_stolen_key(
+        self,
+        ciphertext_hex: str,
+        key_id: str,
+        method: str = "otp",
+        nonce_hex: Optional[str] = None,
+    ) -> str:
+        """Eve decrypts a message using her stolen key material."""
+        key_hex = self._eve_stolen_keys.get(key_id)
+        if not key_hex:
+            raise ValueError(f"Eve has no stolen copy of key {key_id}")
+        ct = bytes.fromhex(ciphertext_hex)
+        if method == "aes":
+            if not nonce_hex:
+                raise ValueError("AES requires nonce")
+            return _aes_decrypt(bytes.fromhex(nonce_hex), ct, key_hex).decode("utf-8")
+        return _xor_encrypt(ct, key_hex).decode("utf-8")  # XOR is self-inverse
+
+    def get_stolen_key_ids(self) -> List[str]:
+        return list(self._eve_stolen_keys.keys())
+
+    def clear_stolen_keys(self) -> None:
+        self._eve_stolen_keys.clear()
 
     # ── Alerts ───────────────────────────────────────────────────────── #
 

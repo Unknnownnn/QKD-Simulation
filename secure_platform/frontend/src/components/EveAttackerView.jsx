@@ -7,6 +7,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   getEveStatus, activateEve, deactivateEve, getEveIntercepts,
   getTopology, getLinks,
+  eveStealKey, generateCompromisedKey, clearStolenKeys,
 } from '../api';
 
 const ATTACK_TYPES = [
@@ -175,6 +176,7 @@ export default function EveAttackerView({ onWsEvent }) {
     intercept_rate: 0.7,
   });
   const [loading, setLoading] = useState(false);
+  const [compromiseLoading, setCompromiseLoading] = useState(false);
   const [scanLines, setScanLines] = useState(0);
   const qubitScrollRef = useRef(null);
   const autoScroll = useRef(true);
@@ -231,9 +233,37 @@ export default function EveAttackerView({ onWsEvent }) {
     } finally { setLoading(false); }
   };
 
+  // Generate a fresh key AND silently give Eve a copy
+  const handleCompromiseKey = async () => {
+    setCompromiseLoading(true);
+    try {
+      await generateCompromisedKey({ key_length: 512 });
+      await fetchAll();
+    } catch (e) {
+      console.error('Compromise key error:', e);
+    } finally { setCompromiseLoading(false); }
+  };
+
+  // Steal the current active key Eve can see on the wire
+  const handleStealKey = async () => {
+    setCompromiseLoading(true);
+    try {
+      await eveStealKey();
+      await fetchAll();
+    } catch (e) {
+      console.error('Steal key error:', e);
+    } finally { setCompromiseLoading(false); }
+  };
+
+  const handleClearStolenKeys = async () => {
+    await clearStolenKeys();
+    await fetchAll();
+  };
+
   const active = eveStatus?.active ?? false;
   const qubits = intercepts?.qubits ?? [];
   const msgs = intercepts?.messages ?? [];
+  const stolenKeys = intercepts?.stolen_key_ids ?? [];
   const links = (topology?.links || []).filter(l => l.src < l.dst);
   const decryptedCount = msgs.filter(m => m.decrypted).length;
 
@@ -276,6 +306,7 @@ export default function EveAttackerView({ onWsEvent }) {
           { label: 'KEY EXPOSURE RATE', value: `${exposeRate}%`, color: '#74b9ff' },
           { label: 'MSGS CAPTURED', value: intercepts?.messages_captured ?? 0, color: '#e17055' },
           { label: 'DECRYPTED', value: decryptedCount, color: decryptedCount > 0 ? '#00e676' : '#555' },
+          { label: 'KEYS STOLEN', value: stolenKeys.length, color: stolenKeys.length > 0 ? '#a29bfe' : '#555' },
         ].map(s => (
           <div key={s.label} style={styles.statItem}>
             <div style={{ fontSize: '18px', fontWeight: 700, color: s.color, fontFamily: 'monospace' }}>{s.value}</div>
@@ -403,6 +434,67 @@ export default function EveAttackerView({ onWsEvent }) {
             Their QKD system will detect anomalous QBER<br />
             and may reroute around compromised links.
           </div>
+
+          {/* ── KEY COMPROMISE ── */}
+          <div style={{ borderTop: '1px solid rgba(162,155,254,0.2)', paddingTop: '12px', marginTop: '8px' }}>
+            <div style={{ ...styles.sectionLabel, color: '#a29bfe' }}>🔑 KEY COMPROMISE</div>
+            <div style={{ fontSize: '9px', color: '#555', marginBottom: '8px', lineHeight: 1.5 }}>
+              Silent steal: grab a copy of the key<br />
+              without any QBER disturbance.<br />
+              <span style={{ color: stolenKeys.length > 0 ? '#a29bfe' : '#444' }}>
+                {stolenKeys.length > 0
+                  ? `${stolenKeys.length} key(s) compromised — all traffic readable`
+                  : 'Alice & Bob remain unaware.'}
+              </span>
+            </div>
+            <button
+              onClick={handleCompromiseKey}
+              disabled={compromiseLoading}
+              style={{
+                width: '100%', padding: '8px', marginBottom: '6px',
+                background: 'rgba(162,155,254,0.12)',
+                border: '1px solid rgba(162,155,254,0.35)',
+                borderRadius: '6px', color: '#a29bfe',
+                fontFamily: 'monospace', fontSize: '10px',
+                cursor: compromiseLoading ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {compromiseLoading ? '[ WORKING... ]' : '[ 🔑 GEN COMPROMISED KEY ]'}
+            </button>
+            <button
+              onClick={handleStealKey}
+              disabled={compromiseLoading}
+              style={{
+                width: '100%', padding: '8px',
+                background: 'rgba(253,203,110,0.08)',
+                border: '1px solid rgba(253,203,110,0.25)',
+                borderRadius: '6px', color: '#fdcb6e',
+                fontFamily: 'monospace', fontSize: '10px',
+                cursor: compromiseLoading ? 'not-allowed' : 'pointer',
+              }}
+            >
+              [ 🕵️ STEAL CURRENT KEY ]
+            </button>
+
+            {/* Stolen key list */}
+            {stolenKeys.length > 0 && (
+              <div style={{ marginTop: '8px', padding: '6px 8px', background: 'rgba(162,155,254,0.07)', borderRadius: '4px', fontSize: '9px', fontFamily: 'monospace' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                  <span style={{ color: '#a29bfe' }}>COMPROMISED KEYS</span>
+                  <span
+                    onClick={handleClearStolenKeys}
+                    style={{ color: '#e17055', cursor: 'pointer', fontSize: '9px' }}
+                    title="Clear stolen keys"
+                  >✕ clear</span>
+                </div>
+                {stolenKeys.slice(-5).map(kid => (
+                  <div key={kid} style={{ color: '#fdcb6e', marginBottom: '2px' }}>
+                    ✓ {kid.slice(0, 18)}…
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* ── CENTER: Qubit Intercept Stream ── */}
@@ -472,7 +564,11 @@ export default function EveAttackerView({ onWsEvent }) {
               <span>Showing last {qubits.length} qubits</span>
               <span style={{ color: '#555' }}>
                 KEY RECONSTRUCTION: Eve knows ~{matchRate}% of sifted key bits
-                — <span style={{ color: '#74b9ff' }}>insufficient to decrypt messages</span>
+                — <span style={{ color: stolenKeys.length > 0 ? '#00e676' : '#74b9ff' }}>
+                  {stolenKeys.length > 0
+                    ? `🔑 FULL KEY STOLEN — decrypting all traffic`
+                    : 'insufficient to decrypt messages'}
+                </span>
               </span>
             </div>
           )}
@@ -509,9 +605,19 @@ export default function EveAttackerView({ onWsEvent }) {
           {msgs.length > 0 && (
             <div style={{ marginTop: '8px', padding: '8px', background: 'rgba(14,14,42,0.6)', borderRadius: '4px', fontSize: '9px', fontFamily: 'monospace', color: '#7986cb', lineHeight: 1.5 }}>
               <span style={{ color: '#74b9ff' }}>ANALYSIS: </span>
-              Messages are encrypted with QKD-derived OTP/AES keys.
-              <br />Eve captured the ciphertext but lacks the quantum key.
-              <br /><span style={{ color: '#555' }}>Information-theoretic security — brute force: infeasible.</span>
+              {stolenKeys.length > 0 ? (
+                <>
+                  Messages encrypted with <span style={{ color: '#a29bfe' }}>compromised keys</span> are
+                  being <span style={{ color: '#00e676' }}>decrypted in real time</span>.<br />
+                  <span style={{ color: '#fdcb6e' }}>Alice &amp; Bob are unaware their key was stolen.</span>
+                </>
+              ) : (
+                <>
+                  Messages are encrypted with QKD-derived OTP/AES keys.<br />
+                  Eve captured the ciphertext but lacks the quantum key.<br />
+                  <span style={{ color: '#555' }}>Information-theoretic security — brute force: infeasible.</span>
+                </>
+              )}
             </div>
           )}
         </div>

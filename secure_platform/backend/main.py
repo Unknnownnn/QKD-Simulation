@@ -219,7 +219,7 @@ class SendMessageRequest(BaseModel):
 async def send_message(body: SendMessageRequest, current_user: dict = Depends(get_current_user)):
     user_id = int(current_user["sub"])
 
-    # Always fetch fresh username from DB — prevents stale JWT username issues
+    # Always fetch fresh identity from DB — prevents stale JWT issues
     db = await get_db()
     try:
         rows = await db.execute_fetchall(
@@ -227,7 +227,8 @@ async def send_message(body: SendMessageRequest, current_user: dict = Depends(ge
         )
         if not rows:
             raise HTTPException(404, "User not found")
-        username = rows[0][0]
+        username = rows[0][0]       # raw username for key lookup
+        display_name = rows[0][1]   # human-readable name shown in chat
     finally:
         await db.close()
 
@@ -269,7 +270,7 @@ async def send_message(body: SendMessageRequest, current_user: dict = Depends(ge
         await db.close()
 
     msg = ChatMessage(
-        id=msg_id, sender_id=user_id, sender_name=username,
+        id=msg_id, sender_id=user_id, sender_name=display_name,
         channel=body.channel, recipient_id=body.recipient_id,
         message_type=MessageType.TEXT, plaintext=body.plaintext,
         ciphertext=ciphertext, encryption_method=method,
@@ -279,21 +280,56 @@ async def send_message(body: SendMessageRequest, current_user: dict = Depends(ge
     # Broadcast via WebSocket
     await ws_manager.broadcast(ws_manager.make_event("new_message", msg.model_dump()))
 
-    # If Eve is active on the network, log this message as intercepted
+    # ── Eve interception ─────────────────────────────────────────────── #
     eve = network_mgr.get_eve_status()
-    if eve.active and ciphertext:
+    has_stolen_keys = bool(key_manager.get_stolen_key_ids())
+
+    # Eve can see this message if EITHER:
+    # A) Her QBER-raising network attack is active AND the current SDN route
+    #    passes through her compromised link (smart routing may divert around her).
+    # B) She has stolen key material — this implies a physical side-channel tap
+    #    (hardware trojan, insider leak, compromised key generation) that is
+    #    independent of SDN routing and does NOT raise QBER.  She sees ALL
+    #    traffic on the wire regardless of which logical route was chosen.
+    route_tapped = eve.active and network_mgr.is_route_compromised()
+    if route_tapped or has_stolen_keys:
+        # Determine what Eve can read:
+        # 1. Unencrypted message — trivially readable.
+        # 2. She stole a copy of this key (side-channel) — full decrypt.
+        # 3. Stealthy QBER attack (PNS / Trojan Horse) on active route — she
+        #    captured enough key bits to decrypt.
+        # 4. Intercept-resend on active route — QBER spiked, key was
+        #    invalidated, she holds ciphertext she cannot open.
+        stealthy = route_tapped and eve.attack_type in ("pns", "trojan_horse")
+        unencrypted = ciphertext is None
+
+        if unencrypted:
+            plaintext_for_eve = body.plaintext      # trivially readable
+        elif key_manager.eve_can_decrypt(key_id):  # stolen key!
+            try:
+                plaintext_for_eve = key_manager.decrypt_with_stolen_key(
+                    ciphertext, key_id, method
+                )
+            except Exception:
+                plaintext_for_eve = None
+        elif stealthy:
+            plaintext_for_eve = body.plaintext      # partial key sufficient
+        else:
+            plaintext_for_eve = None                # intercept-resend: key gone
+
         network_mgr.log_intercepted_message(
-            sender=username,
+            sender=display_name,
             channel=body.channel,
-            ciphertext_hex=ciphertext,
+            ciphertext_hex=ciphertext if ciphertext else f"[PLAINTEXT] {body.plaintext}",
             key_id=key_id,
             plaintext_len=len(body.plaintext),
-            plaintext=body.plaintext,
+            plaintext=plaintext_for_eve,
         )
-        # Broadcast intercept event so Charlie's view updates live
         await ws_manager.broadcast(ws_manager.make_event(
             "intercept_update",
-            network_mgr.get_intercepts().model_dump(),
+            network_mgr.get_intercepts(
+                stolen_key_ids=key_manager.get_stolen_key_ids()
+            ).model_dump(),
         ))
 
     return msg
@@ -322,7 +358,27 @@ async def decrypt_message(body: DecryptRequest):
 
 @app.post("/api/keys/generate", response_model=QKDSessionResult)
 async def generate_key(config: KeyGenerationConfig):
-    """Run BB84 QKD and store the result."""
+    """Run BB84 QKD and store the result.
+
+    Key insight: QKD uses the *same physical route* as the messages.
+    - If smart routing has diverted traffic AROUND Eve's link, the BB84
+      photons also travel on the safe path → Eve is not in the loop →
+      key generation succeeds even though Eve is "active" elsewhere.
+    - If the current route PASSES THROUGH Eve's compromised link, we
+      inject Eve into the BB84 simulation.  Intercept-resend yields
+      QBER ≈ 25 % which is above the 11 % threshold → session aborted,
+      no key stored.  Stealthy attacks may sneak through at lower QBER.
+    """
+    eve = network_mgr.get_eve_status()
+    if eve.active:
+        if network_mgr.is_route_compromised():
+            # QKD photons traverse Eve's tap — force Eve into simulation
+            config.eve_active = True
+            config.eve_intercept_rate = min(0.9, max(0.4, eve.qber_impact or 0.9))
+        else:
+            # Smart routing has taken us around Eve — photons are safe
+            config.eve_active = False
+
     session_result, key_info = key_manager.generate_key("alice:bob", config)
 
     # Push QBER to network
@@ -450,7 +506,9 @@ async def activate_eve(config: EveConfig):
     # Also push fresh intercept data so Charlie's console updates immediately
     await ws_manager.broadcast(ws_manager.make_event(
         "intercept_update",
-        network_mgr.get_intercepts().model_dump(),
+        network_mgr.get_intercepts(
+            stolen_key_ids=key_manager.get_stolen_key_ids()
+        ).model_dump(),
     ))
 
     return result
@@ -462,6 +520,8 @@ async def deactivate_eve(link_id: Optional[str] = None):
         network_mgr.clear_attack(link_id)
     else:
         network_mgr.clear_all_attacks()
+        # Clear Eve's stolen keys when she's fully deactivated
+        key_manager.clear_stolen_keys()
 
     topo = network_mgr.get_topology()
     await ws_manager.broadcast(ws_manager.make_event("attack_cleared", {
@@ -474,7 +534,96 @@ async def deactivate_eve(link_id: Optional[str] = None):
 @app.get("/api/eve/intercepts", response_model=EveIntercepts)
 async def get_eve_intercepts(qubit_limit: int = 128, msg_limit: int = 50):
     """Return Eve's intercept log — for Charlie's attacker dashboard."""
-    return network_mgr.get_intercepts(qubit_limit=qubit_limit, msg_limit=msg_limit)
+    return network_mgr.get_intercepts(
+        qubit_limit=qubit_limit,
+        msg_limit=msg_limit,
+        stolen_key_ids=key_manager.get_stolen_key_ids(),
+    )
+
+
+# ===================================================================== #
+#  EVE KEY THEFT / COMPROMISED KEY GENERATION                            #
+# ===================================================================== #
+
+@app.post("/api/eve/steal-key")
+async def eve_steal_key():
+    """
+    Eve grabs a covert copy of whatever key Alice & Bob are currently using.
+    This simulates a perfect side-channel theft (hardware trojan, insider
+    threat, etc.) — the key itself is NOT invalidated for Alice & Bob;
+    they remain unaware.  Eve can now decrypt any message encrypted with
+    that key.
+    """
+    key_id = key_manager.steal_active_key("alice:bob")
+    if not key_id:
+        raise HTTPException(404, "No active key found for alice:bob to steal")
+    await ws_manager.broadcast(ws_manager.make_event(
+        "intercept_update",
+        network_mgr.get_intercepts(
+            stolen_key_ids=key_manager.get_stolen_key_ids()
+        ).model_dump(),
+    ))
+    return {"stolen": True, "key_id": key_id, "stolen_count": len(key_manager.get_stolen_key_ids())}
+
+
+class CompromisedKeyConfig(BaseModel):
+    key_length: int = 512
+    noise_depol: float = 0.01
+    noise_loss: float = 0.02
+
+
+@app.post("/api/keys/generate-compromised", response_model=QKDSessionResult)
+async def generate_compromised_key(config: CompromisedKeyConfig):
+    """
+    Generate a fresh QKD key for Alice & Bob AND secretly hand Eve a copy.
+
+    This models the scenario where Eve's eavesdropping is undetected —
+    e.g. a near-perfect PNS or Trojan Horse attack that keeps QBER below
+    the detection threshold.  The key is stored in Alice & Bob's pool
+    normally, AND registered in Eve's stolen-key store.  When Alice or Bob
+    subsequently encrypt a message with this key, Eve sees the plaintext.
+    """
+    kconf = KeyGenerationConfig(
+        key_length=config.key_length,
+        noise_depol=config.noise_depol,
+        noise_loss=config.noise_loss,
+        eve_active=False,    # don't spike QBER — Eve is covert here
+    )
+    session_result, key_info = key_manager.generate_key("alice:bob", kconf)
+
+    if not key_info:
+        raise HTTPException(
+            503,
+            "Key generation failed — the simulated session produced no usable key. "
+            "Try again with lower noise parameters."
+        )
+
+    # Eve silently copies the key material
+    key_material = key_manager.get_key_material(key_info.key_id)
+    if key_material:
+        key_manager.register_stolen_key(key_info.key_id, key_material)
+
+    # Push QBER to network so the dashboard updates
+    network_mgr.push_session_qber(session_result.qber)
+
+    await ws_manager.broadcast(ws_manager.make_event("key_generated", {
+        "session": session_result.model_dump(),
+        "key": key_info.model_dump(),
+    }))
+    await ws_manager.broadcast(ws_manager.make_event(
+        "intercept_update",
+        network_mgr.get_intercepts(
+            stolen_key_ids=key_manager.get_stolen_key_ids()
+        ).model_dump(),
+    ))
+    return session_result
+
+
+@app.delete("/api/eve/stolen-keys")
+async def clear_stolen_keys():
+    """Clear all of Eve's stolen keys (e.g. after she's deactivated)."""
+    key_manager.clear_stolen_keys()
+    return {"cleared": True}
 
 
 # ===================================================================== #
@@ -526,7 +675,7 @@ async def advance_demo():
         demo_mgr.complete_step(step.step, {"session_id": session.session_id})
 
     elif step.action == "activate_eve":
-        attack = network_mgr.simulate_attack("A→R1", "intercept_resend")
+        attack = network_mgr.simulate_attack(["A→R1"], "intercept_resend")
         result_data["attack"] = attack.model_dump()
         demo_mgr.complete_step(step.step, {"attack": attack.model_dump()})
 
@@ -597,11 +746,12 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int):
                 # Store in DB
                 db = await get_db()
                 try:
-                    # Get username
+                    # Fetch display_name for human-readable sender identification
                     u_rows = await db.execute_fetchall(
-                        "SELECT username FROM users WHERE user_id=?", (user_id,)
+                        "SELECT username, display_name FROM users WHERE user_id=?", (user_id,)
                     )
-                    sender_name = u_rows[0][0] if u_rows else "unknown"
+                    _ws_username = u_rows[0][0] if u_rows else "unknown"
+                    sender_name = (u_rows[0][1] or _ws_username) if u_rows else "unknown"
 
                     plaintext = payload.get("plaintext", "")
                     channel = payload.get("channel", "general")

@@ -233,6 +233,7 @@ class EveIntercepts(BaseModel):
     messages_captured: int = 0
     qubits: List[InterceptedQubit] = []
     messages: List[InterceptedMessage] = []
+    stolen_key_ids: List[str] = []   # key IDs Eve has stolen via compromised generation
 
 
 # ── Demo Mode ────────────────────────────────────────────────────────── #
